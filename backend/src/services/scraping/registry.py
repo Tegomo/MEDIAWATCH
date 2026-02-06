@@ -6,11 +6,18 @@ from src.services.scraping.sources.fraternite_matin import FraterniteMatin
 from src.services.scraping.sources.abidjan_net import AbidjanNet
 from src.services.scraping.sources.koaci import Koaci
 from src.services.scraping.sources.linfodrome import Linfodrome
+from src.services.scraping.sources.aip_rss import AipRss
 from src.lib.logger import logger
 
 
 # Mapping nom de classe scraper -> classe
+# Supporte à la fois le format snake_case (BD) et PascalCase
 SCRAPER_REGISTRY: dict[str, Type[MediaScraper]] = {
+    "fraternite_matin": FraterniteMatin,
+    "abidjan_net": AbidjanNet,
+    "koaci": Koaci,
+    "linfodrome": Linfodrome,
+    "aip_rss": AipRss,
     "FraterniteMatin": FraterniteMatin,
     "AbidjanNet": AbidjanNet,
     "Koaci": Koaci,

@@ -2,7 +2,7 @@ import { useState, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Loader2, TrendingUp, TrendingDown, Minus, RefreshCw, Search, Inbox } from 'lucide-react'
+import { Loader2, TrendingUp, TrendingDown, Minus, RefreshCw, Search, Inbox, Radar } from 'lucide-react'
 import MentionList from '@/components/mentions/MentionList'
 import MentionDetailModal from '@/components/mentions/MentionDetailModal'
 import FilterBar, { EMPTY_FILTERS, hasActiveFilters } from '@/components/filters/FilterBar'
@@ -45,6 +45,8 @@ export default function DashboardPage() {
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS)
   const [appliedFilters, setAppliedFilters] = useState<Filters>(EMPTY_FILTERS)
   const [selectedMentionId, setSelectedMentionId] = useState<string | null>(null)
+  const [scanning, setScanning] = useState(false)
+  const [scanResult, setScanResult] = useState<string | null>(null)
   const limit = 20
 
   const applyFilters = () => {
@@ -52,20 +54,24 @@ export default function DashboardPage() {
     setOffset(0)
   }
 
-  // Auto-apply on sentiment/theme/date change
-  const handleFiltersChange = (newFilters: Filters) => {
+  // Auto-apply on sentiment/theme/date change, defer search to Enter key
+  const handleFiltersChange = useCallback((newFilters: Filters) => {
     setFilters(newFilters)
-    // Auto-apply non-search filters immediately
-    if (
-      newFilters.sentiment !== filters.sentiment ||
-      newFilters.theme !== filters.theme ||
-      newFilters.dateFrom !== filters.dateFrom ||
-      newFilters.dateTo !== filters.dateTo
-    ) {
-      setAppliedFilters({ ...newFilters })
+    setAppliedFilters((prev) => {
+      // If only the search text changed, don't auto-apply (wait for Enter)
+      if (
+        newFilters.sentiment === prev.sentiment &&
+        newFilters.theme === prev.theme &&
+        newFilters.dateFrom === prev.dateFrom &&
+        newFilters.dateTo === prev.dateTo
+      ) {
+        return prev
+      }
+      // A non-search filter changed → apply immediately
       setOffset(0)
-    }
-  }
+      return { ...newFilters }
+    })
+  }, [])
 
   const handleClear = () => {
     setFilters(EMPTY_FILTERS)
@@ -118,6 +124,47 @@ export default function DashboardPage() {
           <p className="text-muted-foreground">Mentions récentes dans les médias ivoiriens</p>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            onClick={async () => {
+              setScanning(true)
+              setScanResult(null)
+              try {
+                const resp = await api.post<{
+                  success: boolean
+                  message: string
+                  details?: {
+                    sources_scannees: number
+                    nouveaux_articles: number
+                    mentions_creees: number
+                    erreurs_scraping: string[]
+                  }
+                }>('/mentions/scan', {}, { timeout: 300000 })
+                const d = resp.data.details
+                if (d) {
+                  setScanResult(
+                    `${d.sources_scannees} sources scannées, ${d.nouveaux_articles} nouveaux articles, ${d.mentions_creees} mentions créées`
+                  )
+                } else {
+                  setScanResult(resp.data.message)
+                }
+                refetch()
+              } catch {
+                setScanResult('Erreur lors du scan')
+              } finally {
+                setScanning(false)
+              }
+            }}
+            disabled={scanning}
+            className="gap-2"
+          >
+            {scanning ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Radar className="h-4 w-4" />
+            )}
+            {scanning ? 'Scan en cours...' : 'Lancer un scan'}
+          </Button>
           <ExportButton filters={appliedFilters} />
           <Button
             variant="outline"
@@ -131,6 +178,19 @@ export default function DashboardPage() {
           </Button>
         </div>
       </div>
+
+      {/* Résultat du scan */}
+      {scanResult && (
+        <div className="flex items-center justify-between rounded-lg border bg-muted/50 px-4 py-2.5 text-sm">
+          <span>{scanResult}</span>
+          <button
+            onClick={() => setScanResult(null)}
+            className="ml-4 text-muted-foreground hover:text-foreground"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Stats cards */}
       <div className="grid gap-4 md:grid-cols-4">

@@ -53,7 +53,7 @@ class MentionService:
 
         if sentiment:
             try:
-                sentiment_enum = SentimentLabel(sentiment)
+                sentiment_enum = SentimentLabel(sentiment.lower())
                 query = query.filter(Mention.sentiment_label == sentiment_enum)
             except ValueError:
                 pass
@@ -78,7 +78,7 @@ class MentionService:
         if theme:
             from src.models.mention import Theme
             try:
-                theme_enum = Theme(theme)
+                theme_enum = Theme(theme.lower())
                 query = query.filter(Mention.theme == theme_enum)
             except ValueError:
                 pass

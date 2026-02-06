@@ -5,8 +5,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
+import logging
+
 from src.config import settings
-from src.lib.logger import logger
 
 
 @dataclass
@@ -36,7 +37,7 @@ class MediaScraper(ABC):
         self.base_url = base_url
         self.user_agent = settings.scraping_user_agent
         self.rate_limit = settings.scraping_rate_limit
-        self.logger = logger.bind(scraper=source_name)
+        self.logger = logging.getLogger(f"scraper.{source_name}")
 
     @abstractmethod
     async def get_article_urls(self, max_pages: int = 3) -> list[str]:
