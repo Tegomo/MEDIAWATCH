@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Rapport MediaWatch CI</title>
+    <style>
+        @page {
+            size: A4;
+            margin: 2cm;
+        }
+        body {
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+            font-size: 11px;
+            color: #1a1a1a;
+            line-height: 1.5;
+        }
+        .header {
+            text-align: center;
+            border-bottom: 3px solid #2563eb;
+            padding-bottom: 15px;
+            margin-bottom: 25px;
+        }
+        .header h1 {
+            font-size: 22px;
+            color: #2563eb;
+            margin: 0 0 5px 0;
+        }
+        .header .subtitle {
+            font-size: 12px;
+            color: #6b7280;
+        }
+        .summary {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 25px;
+        }
+        .stat-card {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 12px 18px;
+            text-align: center;
+            width: 22%;
+            display: inline-block;
+            margin-right: 2%;
+        }
+        .stat-card:last-child { margin-right: 0; }
+        .stat-card .value {
+            font-size: 24px;
+            font-weight: 700;
+        }
+        .stat-card .label {
+            font-size: 10px;
+            color: #6b7280;
+            text-transform: uppercase;
+        }
+        .positive { color: #16a34a; }
+        .negative { color: #dc2626; }
+        .neutral { color: #6b7280; }
+        .section-title {
+            font-size: 14px;
+            font-weight: 700;
+            color: #1e293b;
+            border-bottom: 2px solid #e2e8f0;
+            padding-bottom: 6px;
+            margin: 20px 0 12px 0;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+            font-size: 10px;
+        }
+        th {
+            background: #f1f5f9;
+            color: #475569;
+            font-weight: 600;
+            text-align: left;
+            padding: 8px 6px;
+            border-bottom: 2px solid #cbd5e1;
+        }
+        td {
+            padding: 6px;
+            border-bottom: 1px solid #e2e8f0;
+            vertical-align: top;
+        }
+        tr:nth-child(even) { background: #f8fafc; }
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 9px;
+            font-weight: 600;
+        }
+        .badge-positive { background: #dcfce7; color: #16a34a; }
+        .badge-negative { background: #fee2e2; color: #dc2626; }
+        .badge-neutral { background: #f3f4f6; color: #6b7280; }
+        .footer {
+            margin-top: 30px;
+            padding-top: 10px;
+            border-top: 1px solid #e2e8f0;
+            text-align: center;
+            font-size: 9px;
+            color: #9ca3af;
+        }
+        .context {
+            max-width: 250px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .filters-info {
+            background: #eff6ff;
+            border: 1px solid #bfdbfe;
+            border-radius: 6px;
+            padding: 8px 12px;
+            margin-bottom: 15px;
+            font-size: 10px;
+            color: #1e40af;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>MediaWatch CI</h1>
+        <div class="subtitle">Rapport de veille m&eacute;diatique &mdash; G&eacute;n&eacute;r&eacute; le {{ generated_at }}</div>
+    </div>
+
+    {% if filters_description %}
+    <div class="filters-info">
+        <strong>Filtres appliqu&eacute;s :</strong> {{ filters_description }}
+    </div>
+    {% endif %}
+
+    <div class="summary">
+        <div class="stat-card">
+            <div class="value">{{ total_mentions }}</div>
+            <div class="label">Mentions</div>
+        </div>
+        <div class="stat-card">
+            <div class="value positive">{{ positive_count }}</div>
+            <div class="label">Positives</div>
+        </div>
+        <div class="stat-card">
+            <div class="value neutral">{{ neutral_count }}</div>
+            <div class="label">Neutres</div>
+        </div>
+        <div class="stat-card">
+            <div class="value negative">{{ negative_count }}</div>
+            <div class="label">N&eacute;gatives</div>
+        </div>
+    </div>
+
+    <div class="section-title">D&eacute;tail des mentions ({{ total_mentions }})</div>
+    <table>
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>Mot-cl&eacute;</th>
+                <th>Titre article</th>
+                <th>Source</th>
+                <th>Sentiment</th>
+                <th>Score</th>
+                <th>Th&egrave;me</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for m in mentions %}
+            <tr>
+                <td>{{ m.detected_at }}</td>
+                <td><strong>{{ m.keyword_text }}</strong></td>
+                <td>{{ m.article_title }}</td>
+                <td>{{ m.source_name }}</td>
+                <td>
+                    <span class="badge badge-{{ m.sentiment_label }}">
+                        {{ m.sentiment_label_display }}
+                    </span>
+                </td>
+                <td>{{ m.sentiment_score }}</td>
+                <td>{{ m.theme }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <div class="footer">
+        MediaWatch CI &mdash; Plateforme de veille m&eacute;diatique automatis&eacute;e &mdash; {{ generated_at }}
+    </div>
+</body>
+</html>

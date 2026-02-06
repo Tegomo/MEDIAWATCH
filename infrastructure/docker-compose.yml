@@ -1,0 +1,80 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: mediawatch-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: mediawatch
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: mediawatch-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Celery Worker (démarrer après avoir configuré le backend)
+  # celery-worker:
+  #   build:
+  #     context: ../backend
+  #     dockerfile: Dockerfile
+  #   container_name: mediawatch-celery-worker
+  #   command: celery -A src.workers.celery_app worker --loglevel=info
+  #   depends_on:
+  #     - postgres
+  #     - redis
+  #   env_file:
+  #     - ../backend/.env
+  #   volumes:
+  #     - ../backend:/app
+
+  # Celery Beat (scheduler)
+  # celery-beat:
+  #   build:
+  #     context: ../backend
+  #     dockerfile: Dockerfile
+  #   container_name: mediawatch-celery-beat
+  #   command: celery -A src.workers.celery_app beat --loglevel=info
+  #   depends_on:
+  #     - postgres
+  #     - redis
+  #   env_file:
+  #     - ../backend/.env
+  #   volumes:
+  #     - ../backend:/app
+
+  # Flower (monitoring Celery)
+  # flower:
+  #   build:
+  #     context: ../backend
+  #     dockerfile: Dockerfile
+  #   container_name: mediawatch-flower
+  #   command: celery -A src.workers.celery_app flower --port=5555
+  #   ports:
+  #     - "5555:5555"
+  #   depends_on:
+  #     - redis
+  #   env_file:
+  #     - ../backend/.env
+
+volumes:
+  # postgres_data:  # Non nécessaire avec Supabase
+  redis_data:

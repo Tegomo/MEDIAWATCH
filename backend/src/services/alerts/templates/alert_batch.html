@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>R&eacute;sum&eacute; Alertes MediaWatch CI</title>
+  <style>
+    body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #f4f4f5; }
+    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+    .card { background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .header { background: #ea580c; color: #ffffff; padding: 20px 24px; }
+    .header h1 { margin: 0; font-size: 20px; font-weight: 600; }
+    .header p { margin: 4px 0 0; font-size: 14px; opacity: 0.9; }
+    .body { padding: 24px; }
+    .summary { background: #fff7ed; border-radius: 6px; padding: 16px; margin-bottom: 20px; }
+    .summary-stat { display: inline-block; margin-right: 24px; }
+    .summary-stat .number { font-size: 24px; font-weight: 700; color: #ea580c; }
+    .summary-stat .label { font-size: 12px; color: #71717a; }
+    .mention-item { border-bottom: 1px solid #f4f4f5; padding: 16px 0; }
+    .mention-item:last-child { border-bottom: none; }
+    .mention-title { font-size: 15px; font-weight: 600; color: #18181b; margin: 0; }
+    .mention-meta { font-size: 12px; color: #71717a; margin-top: 4px; }
+    .mention-context { font-size: 13px; color: #3f3f46; margin-top: 8px; line-height: 1.5; }
+    .sentiment-badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+    .sentiment-negative { background: #fee2e2; color: #dc2626; }
+    .sentiment-positive { background: #dcfce7; color: #16a34a; }
+    .sentiment-neutral { background: #f4f4f5; color: #71717a; }
+    .keyword-badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 500; background: #e0e7ff; color: #4338ca; margin-left: 4px; }
+    .btn { display: inline-block; margin-top: 20px; padding: 10px 24px; background: #2563eb; color: #ffffff; text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 500; }
+    .footer { padding: 16px 24px; text-align: center; font-size: 12px; color: #a1a1aa; border-top: 1px solid #f4f4f5; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <div class="header">
+        <h1>R&eacute;sum&eacute; des alertes</h1>
+        <p>{{ mention_count }} mention(s) d&eacute;tect&eacute;e(s) dans la derni&egrave;re heure</p>
+      </div>
+      <div class="body">
+        <div class="summary">
+          <div class="summary-stat">
+            <div class="number">{{ mention_count }}</div>
+            <div class="label">Mentions</div>
+          </div>
+          <div class="summary-stat">
+            <div class="number">{{ negative_count }}</div>
+            <div class="label">N&eacute;gatives</div>
+          </div>
+          <div class="summary-stat">
+            <div class="number">{{ keyword_count }}</div>
+            <div class="label">Mots-cl&eacute;s</div>
+          </div>
+        </div>
+
+        {% for mention in mentions %}
+        <div class="mention-item">
+          <p class="mention-title">{{ mention.article_title }}</p>
+          <div class="mention-meta">
+            {{ mention.source_name }} &mdash; {{ mention.published_at }}
+            <span class="sentiment-badge sentiment-{{ mention.sentiment_label }}">{{ mention.sentiment_label_fr }}</span>
+            <span class="keyword-badge">{{ mention.keyword_text }}</span>
+          </div>
+          <p class="mention-context">{{ mention.match_context | truncate(200) }}</p>
+        </div>
+        {% endfor %}
+
+        <a href="{{ dashboard_url }}" class="btn">Voir toutes les mentions</a>
+      </div>
+      <div class="footer">
+        <p>MediaWatch CI &mdash; Veille m&eacute;dias automatis&eacute;e</p>
+        <p><a href="{{ unsubscribe_url }}" style="color:#a1a1aa;">G&eacute;rer mes alertes</a></p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
