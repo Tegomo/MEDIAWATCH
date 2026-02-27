@@ -1,8 +1,18 @@
 """Schémas pour les mots-clés"""
 from typing import Optional
 from datetime import datetime
+from enum import Enum
 from pydantic import BaseModel, Field, field_validator
-from src.models.keyword import KeywordCategory
+
+
+class KeywordCategory(str, Enum):
+    BRAND = "BRAND"
+    PRODUCT = "PRODUCT"
+    PERSON = "PERSON"
+    COMPETITOR = "COMPETITOR"
+    ORGANIZATION = "ORGANIZATION"
+    TOPIC = "TOPIC"
+    CUSTOM = "CUSTOM"
 
 
 class KeywordCreate(BaseModel):
@@ -32,7 +42,7 @@ class KeywordCreate(BaseModel):
 class KeywordUpdate(BaseModel):
     """Schéma pour mettre à jour un mot-clé"""
     text: Optional[str] = Field(None, min_length=2, max_length=255)
-    category: Optional[KeywordCategory] = None
+    category: Optional[str] = None
     enabled: Optional[bool] = None
     alert_enabled: Optional[bool] = None
     alert_threshold: Optional[float] = Field(None, ge=0.0, le=1.0)

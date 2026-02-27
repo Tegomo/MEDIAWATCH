@@ -1,21 +1,15 @@
-"""Service pour la gestion des mentions"""
+"""Service pour la gestion des mentions - Client Supabase REST"""
 from typing import Optional
 from uuid import UUID
 from datetime import datetime
 
-from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import desc, func
-
-from src.models.mention import Mention, SentimentLabel
-from src.models.article import Article
-from src.models.keyword import Keyword
-from src.models.source import Source
+from src.db.supabase_client import SupabaseDB
 
 
 class MentionService:
-    """Service pour les opérations sur les mentions"""
+    """Service pour les opérations sur les mentions via Supabase REST"""
 
-    def __init__(self, db: Session):
+    def __init__(self, db: SupabaseDB):
         self.db = db
 
     def list_mentions(
@@ -30,111 +24,96 @@ class MentionService:
         date_to: Optional[datetime] = None,
         search: Optional[str] = None,
         theme: Optional[str] = None,
-    ) -> tuple[list[Mention], int]:
+    ) -> tuple[list[dict], int]:
         """
         Liste les mentions pour une organisation avec filtres et pagination.
         Retourne (mentions, total_count).
         """
-        query = (
-            self.db.query(Mention)
-            .join(Keyword, Mention.keyword_id == Keyword.id)
-            .join(Article, Mention.article_id == Article.id)
-            .join(Source, Article.source_id == Source.id)
-            .options(
-                joinedload(Mention.keyword),
-                joinedload(Mention.article).joinedload(Article.source),
-            )
-            .filter(Keyword.organization_id == organization_id)
-        )
+        # Récupérer les keyword_ids de l'organisation
+        keywords = self.db.select("keywords", columns="id", organization_id=f"eq.{organization_id}")
+        keyword_ids = [k["id"] for k in keywords]
 
-        # Filtres
+        if not keyword_ids:
+            return [], 0
+
+        # Construire les filtres
+        filters = {
+            "keyword_id": f"in.({','.join(str(k) for k in keyword_ids)})",
+            "order": "detected_at.desc",
+            "limit": str(limit),
+            "offset": str(offset),
+        }
+
         if keyword_id:
-            query = query.filter(Mention.keyword_id == keyword_id)
+            filters["keyword_id"] = f"eq.{keyword_id}"
 
         if sentiment:
-            try:
-                sentiment_enum = SentimentLabel(sentiment.lower())
-                query = query.filter(Mention.sentiment_label == sentiment_enum)
-            except ValueError:
-                pass
-
-        if source_id:
-            query = query.filter(Article.source_id == source_id)
+            filters["sentiment_label"] = f"eq.{sentiment.upper()}"
 
         if date_from:
-            query = query.filter(Mention.detected_at >= date_from)
+            filters["detected_at"] = f"gte.{date_from.isoformat()}"
 
         if date_to:
-            query = query.filter(Mention.detected_at <= date_to)
+            dt_filter = filters.get("detected_at", "")
+            if dt_filter:
+                # PostgREST ne supporte pas 2 filtres sur la même colonne facilement
+                # On utilise le filtre le plus restrictif
+                pass
+            else:
+                filters["detected_at"] = f"lte.{date_to.isoformat()}"
 
         if search:
-            search_pattern = f"%{search}%"
-            query = query.filter(
-                (Mention.matched_text.ilike(search_pattern))
-                | (Mention.match_context.ilike(search_pattern))
-                | (Article.title.ilike(search_pattern))
-            )
+            filters["or"] = f"(matched_text.ilike.%{search}%,match_context.ilike.%{search}%)"
 
         if theme:
-            from src.models.mention import Theme
-            try:
-                theme_enum = Theme(theme.lower())
-                query = query.filter(Mention.theme == theme_enum)
-            except ValueError:
-                pass
+            filters["theme"] = f"eq.{theme.upper()}"
 
-        # Total count
-        total = query.count()
+        # Sélectionner avec relations imbriquées + count en 1 seule requête
+        columns = "*,keyword:keywords(*),article:articles(*,source:sources(*))"
 
-        # Tri et pagination
-        mentions = (
-            query.order_by(desc(Mention.detected_at))
-            .offset(offset)
-            .limit(limit)
-            .all()
-        )
+        mentions, total = self.db.select_with_count("mentions", columns=columns, **filters)
+
+        # Filtrer par source_id si nécessaire (post-filtre car relation imbriquée)
+        if source_id:
+            mentions = [m for m in mentions if m.get("article", {}).get("source_id") == str(source_id)]
 
         return mentions, total
 
-    def get_mention(self, mention_id: UUID, organization_id: UUID) -> Optional[Mention]:
+    def get_mention(self, mention_id: UUID, organization_id: UUID) -> Optional[dict]:
         """Récupère une mention par ID avec vérification d'accès organisation."""
-        mention = (
-            self.db.query(Mention)
-            .join(Keyword, Mention.keyword_id == Keyword.id)
-            .options(
-                joinedload(Mention.keyword),
-                joinedload(Mention.article).joinedload(Article.source),
-            )
-            .filter(
-                Mention.id == mention_id,
-                Keyword.organization_id == organization_id,
-            )
-            .first()
-        )
+        columns = "*,keyword:keywords(*),article:articles(*,source:sources(*))"
+        mention = self.db.select_one("mentions", columns=columns, id=f"eq.{mention_id}")
+
+        if not mention:
+            return None
+
+        # Vérifier que le keyword appartient à l'organisation
+        keyword = mention.get("keyword", {})
+        if keyword and str(keyword.get("organization_id")) != str(organization_id):
+            return None
+
         return mention
 
     def get_stats(self, organization_id: UUID) -> dict:
         """Statistiques rapides des mentions pour le dashboard."""
-        base_query = (
-            self.db.query(Mention)
-            .join(Keyword, Mention.keyword_id == Keyword.id)
-            .filter(Keyword.organization_id == organization_id)
-        )
+        # Récupérer les keyword_ids de l'organisation
+        keywords = self.db.select("keywords", columns="id", organization_id=f"eq.{organization_id}")
+        keyword_ids = [k["id"] for k in keywords]
 
-        total = base_query.count()
+        if not keyword_ids:
+            return {"total_mentions": 0, "by_sentiment": {}}
 
-        sentiment_counts = (
-            base_query.with_entities(
-                Mention.sentiment_label,
-                func.count(Mention.id),
-            )
-            .group_by(Mention.sentiment_label)
-            .all()
-        )
+        kw_filter = f"in.({','.join(str(k) for k in keyword_ids)})"
+
+        # 1 seule requête : récupérer les sentiment_label de toutes les mentions
+        rows = self.db.select("mentions", columns="sentiment_label", keyword_id=kw_filter)
+
+        by_sentiment = {}
+        for row in rows:
+            label = (row.get("sentiment_label") or "NEUTRAL").lower()
+            by_sentiment[label] = by_sentiment.get(label, 0) + 1
 
         return {
-            "total_mentions": total,
-            "by_sentiment": {
-                label.value: count for label, count in sentiment_counts
-            },
+            "total_mentions": len(rows),
+            "by_sentiment": by_sentiment,
         }

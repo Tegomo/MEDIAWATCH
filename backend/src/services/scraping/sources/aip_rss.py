@@ -5,6 +5,7 @@ from typing import Optional
 from xml.etree import ElementTree
 
 from src.services.scraping.base import MediaScraper, ScrapedArticle
+from src.services.scraping.jina_reader import get_jina_reader
 
 
 class AipRss(MediaScraper):
@@ -65,68 +66,46 @@ class AipRss(MediaScraper):
         return urls
 
     async def parse_article(self, url: str) -> Optional[ScrapedArticle]:
-        """Parse un article AIP depuis son URL."""
+        """Parse un article AIP avec Jina AI Reader."""
+        jina = get_jina_reader()
+        
         try:
-            from selectolax.parser import HTMLParser
-        except ImportError:
-            self.logger.error("selectolax non installé")
-            return None
-
-        async with httpx.AsyncClient(
-            headers={"User-Agent": self.user_agent},
-            timeout=30,
-            follow_redirects=True,
-        ) as client:
-            response = await client.get(url)
-            if response.status_code != 200:
+            data = await jina.read_url(url)
+            if not data:
                 return None
-
-        tree = HTMLParser(response.text)
-
-        # Titre
-        title_node = tree.css_first("h1.entry-title, h1.post-title, h1")
-        if not title_node:
+            
+            title = data.get("title", "")
+            content = data.get("content", "")
+            
+            if not title or len(content) < 50:
+                return None
+            
+            # Jina AI retourne déjà du markdown propre
+            cleaned_content = content
+            
+            # Date de publication
+            published_at = datetime.utcnow()
+            if data.get("published_date"):
+                parsed_date = jina.parse_published_date(data["published_date"])
+                if parsed_date:
+                    published_at = parsed_date
+            
+            # Auteur (AIP par défaut)
+            author = data.get("author") or "AIP"
+            
+            return ScrapedArticle(
+                title=title,
+                url=url,
+                raw_content=content,  # Markdown brut
+                cleaned_content=cleaned_content,
+                published_at=published_at,
+                author=author,
+                metadata={
+                    "description": data.get("description", ""),
+                    "images": data.get("images", []),
+                }
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Erreur Jina AI pour {url}: {str(e)}")
             return None
-        title = title_node.text(strip=True)
-
-        # Contenu
-        content_node = tree.css_first(
-            ".entry-content, .post-content, .article-content, article .content"
-        )
-        if not content_node:
-            return None
-
-        raw_content = content_node.html or ""
-        cleaned_content = self.clean_text(content_node.text(strip=True))
-
-        if len(cleaned_content) < 50:
-            return None
-
-        # Auteur
-        author = "AIP"
-        author_node = tree.css_first(".author-name, .post-author, [rel='author']")
-        if author_node:
-            author = author_node.text(strip=True)
-
-        # Date
-        published_at = datetime.utcnow()
-        date_node = tree.css_first("time[datetime], .post-date, .entry-date")
-        if date_node:
-            dt_attr = date_node.attributes.get("datetime", "")
-            if dt_attr:
-                parsed = self.extract_date(dt_attr)
-                if parsed:
-                    published_at = parsed
-            else:
-                parsed = self.extract_date(date_node.text(strip=True))
-                if parsed:
-                    published_at = parsed
-
-        return ScrapedArticle(
-            title=title,
-            url=url,
-            raw_content=raw_content,
-            cleaned_content=cleaned_content,
-            published_at=published_at,
-            author=author,
-        )

@@ -1,13 +1,14 @@
 import { useState, useCallback } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Loader2, TrendingUp, TrendingDown, Minus, RefreshCw, Search, Inbox, Radar } from 'lucide-react'
+import { Loader2, TrendingUp, TrendingDown, Minus, RefreshCw, Search, Inbox } from 'lucide-react'
 import MentionList from '@/components/mentions/MentionList'
 import MentionDetailModal from '@/components/mentions/MentionDetailModal'
 import FilterBar, { EMPTY_FILTERS, hasActiveFilters } from '@/components/filters/FilterBar'
 import type { Filters } from '@/components/filters/FilterBar'
 import ExportButton from '@/components/exports/ExportButton'
+import ScanDialog from '@/components/scan/ScanDialog'
 import api from '@/services/api'
 
 interface MentionListResponse {
@@ -46,8 +47,86 @@ export default function DashboardPage() {
   const [appliedFilters, setAppliedFilters] = useState<Filters>(EMPTY_FILTERS)
   const [selectedMentionId, setSelectedMentionId] = useState<string | null>(null)
   const [scanning, setScanning] = useState(false)
+  const [scanProgress, setScanProgress] = useState('')
   const [scanResult, setScanResult] = useState<string | null>(null)
+  const queryClient = useQueryClient()
   const limit = 20
+
+  const handleScan = async (params: { keyword_id?: string; date_from?: string; date_to?: string } = {}) => {
+    setScanning(true)
+    setScanResult(null)
+    setScanProgress('Démarrage…')
+    try {
+      const launch = await api.post<{ success: boolean; message: string }>('/mentions/scan', params)
+      if (!launch.data.success) {
+        setScanResult(launch.data.message)
+        setScanning(false)
+        return
+      }
+
+      const poll = async (): Promise<void> => {
+        const s = await api.get<{
+          running: boolean
+          progress: string
+          result: {
+            success: boolean
+            message: string
+            details?: {
+              sources_scannees: number
+              liens_articles: number
+              nouveaux_articles_sources?: number
+              nouveaux_articles_recherche?: number
+              nouveaux_articles_total?: number
+              nouveaux_articles?: number
+              articles_analyses: number
+              mentions_creees: number
+              erreurs_scraping: string[]
+              erreurs_nlp: number
+            }
+          } | null
+        }>('/mentions/scan/status')
+
+        if (s.data.running) {
+          setScanProgress(s.data.progress || 'En cours…')
+          await new Promise(r => setTimeout(r, 3000))
+          return poll()
+        }
+
+        const r = s.data.result
+        if (r?.details) {
+          const d = r.details
+          const totalArticles = d.nouveaux_articles_total ?? d.nouveaux_articles ?? 0
+          const fromSources = d.nouveaux_articles_sources ?? totalArticles
+          const fromSearch = d.nouveaux_articles_recherche ?? 0
+          const parts = [
+            `${d.sources_scannees} sources scannées`,
+            `${d.liens_articles} liens découverts`,
+            `${fromSources} articles (sources)`,
+            `${fromSearch} articles (recherche web)`,
+            `${d.mentions_creees} mentions créées`,
+          ]
+          let msg = parts.join(' · ')
+          if (d.erreurs_scraping?.length) {
+            msg += '\n⚠️ ' + d.erreurs_scraping.join('\n⚠️ ')
+          }
+          setScanResult(msg)
+        } else {
+          setScanResult(r?.message || 'Scan terminé')
+        }
+        setScanning(false)
+        setScanProgress('')
+        queryClient.invalidateQueries({ queryKey: ['mentions'] })
+        queryClient.invalidateQueries({ queryKey: ['mention-stats'] })
+      }
+
+      await poll()
+    } catch (err: unknown) {
+      const axiosErr = err as { response?: { data?: { detail?: string } } }
+      setScanResult(axiosErr?.response?.data?.detail || 'Erreur lors du scan')
+      setScanning(false)
+      setScanProgress('')
+    }
+  }
 
   const applyFilters = () => {
     setAppliedFilters({ ...filters })
@@ -124,47 +203,7 @@ export default function DashboardPage() {
           <p className="text-muted-foreground">Mentions récentes dans les médias ivoiriens</p>
         </div>
         <div className="flex items-center gap-2">
-          <Button
-            size="sm"
-            onClick={async () => {
-              setScanning(true)
-              setScanResult(null)
-              try {
-                const resp = await api.post<{
-                  success: boolean
-                  message: string
-                  details?: {
-                    sources_scannees: number
-                    nouveaux_articles: number
-                    mentions_creees: number
-                    erreurs_scraping: string[]
-                  }
-                }>('/mentions/scan', {}, { timeout: 300000 })
-                const d = resp.data.details
-                if (d) {
-                  setScanResult(
-                    `${d.sources_scannees} sources scannées, ${d.nouveaux_articles} nouveaux articles, ${d.mentions_creees} mentions créées`
-                  )
-                } else {
-                  setScanResult(resp.data.message)
-                }
-                refetch()
-              } catch {
-                setScanResult('Erreur lors du scan')
-              } finally {
-                setScanning(false)
-              }
-            }}
-            disabled={scanning}
-            className="gap-2"
-          >
-            {scanning ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Radar className="h-4 w-4" />
-            )}
-            {scanning ? 'Scan en cours...' : 'Lancer un scan'}
-          </Button>
+          <ScanDialog scanning={scanning} onScanStart={handleScan} />
           <ExportButton filters={appliedFilters} />
           <Button
             variant="outline"
@@ -179,13 +218,20 @@ export default function DashboardPage() {
         </div>
       </div>
 
+      {/* Progression du scan */}
+      {scanning && scanProgress && (
+        <div className="rounded-md border border-primary/30 bg-primary/5 p-3 text-sm text-primary">
+          ⏳ {scanProgress}
+        </div>
+      )}
+
       {/* Résultat du scan */}
       {scanResult && (
         <div className="flex items-center justify-between rounded-lg border bg-muted/50 px-4 py-2.5 text-sm">
-          <span>{scanResult}</span>
+          <span className="whitespace-pre-line">{scanResult}</span>
           <button
             onClick={() => setScanResult(null)}
-            className="ml-4 text-muted-foreground hover:text-foreground"
+            className="ml-4 shrink-0 text-muted-foreground hover:text-foreground"
           >
             ✕
           </button>

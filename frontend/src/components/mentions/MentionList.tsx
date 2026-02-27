@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import MentionCard from './MentionCard'
 
@@ -31,6 +31,28 @@ interface MentionListProps {
   onMentionClick: (id: string) => void
 }
 
+function getPageNumbers(currentPage: number, totalPages: number): (number | 'ellipsis')[] {
+  const pages: (number | 'ellipsis')[] = []
+  const delta = 1
+
+  pages.push(1)
+
+  const rangeStart = Math.max(2, currentPage - delta)
+  const rangeEnd = Math.min(totalPages - 1, currentPage + delta)
+
+  if (rangeStart > 2) pages.push('ellipsis')
+
+  for (let i = rangeStart; i <= rangeEnd; i++) {
+    pages.push(i)
+  }
+
+  if (rangeEnd < totalPages - 1) pages.push('ellipsis')
+
+  if (totalPages > 1) pages.push(totalPages)
+
+  return pages
+}
+
 export default function MentionList({
   mentions,
   total,
@@ -48,6 +70,8 @@ export default function MentionList({
     return null
   }
 
+  const pageNumbers = getPageNumbers(currentPage, totalPages)
+
   return (
     <div className="space-y-3">
       {mentions.map((mention) => (
@@ -56,31 +80,69 @@ export default function MentionList({
 
       {/* Pagination */}
       {totalPages > 1 && (
-        <div className="flex items-center justify-between pt-4">
+        <div className="flex items-center justify-between border-t pt-4">
           <p className="text-sm text-muted-foreground">
-            {offset + 1}-{Math.min(offset + limit, total)} sur {total} mentions
+            {offset + 1}–{Math.min(offset + limit, total)} sur {total} mentions
           </p>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
             <Button
               variant="outline"
-              size="sm"
+              size="icon"
+              className="h-8 w-8"
+              disabled={!hasPrev}
+              onClick={() => onPageChange(0)}
+              title="Première page"
+            >
+              <ChevronsLeft className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="outline"
+              size="icon"
+              className="h-8 w-8"
               disabled={!hasPrev}
               onClick={() => onPageChange(Math.max(0, offset - limit))}
+              title="Page précédente"
             >
               <ChevronLeft className="h-4 w-4" />
-              Précédent
             </Button>
-            <span className="text-sm text-muted-foreground">
-              Page {currentPage}/{totalPages}
-            </span>
+
+            {pageNumbers.map((page, idx) =>
+              page === 'ellipsis' ? (
+                <span key={`ellipsis-${idx}`} className="px-1 text-sm text-muted-foreground">
+                  …
+                </span>
+              ) : (
+                <Button
+                  key={page}
+                  variant={page === currentPage ? 'default' : 'outline'}
+                  size="icon"
+                  className="h-8 w-8 text-xs"
+                  onClick={() => onPageChange((page - 1) * limit)}
+                >
+                  {page}
+                </Button>
+              )
+            )}
+
             <Button
               variant="outline"
-              size="sm"
+              size="icon"
+              className="h-8 w-8"
               disabled={!hasNext}
               onClick={() => onPageChange(offset + limit)}
+              title="Page suivante"
             >
-              Suivant
               <ChevronRight className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="outline"
+              size="icon"
+              className="h-8 w-8"
+              disabled={!hasNext}
+              onClick={() => onPageChange((totalPages - 1) * limit)}
+              title="Dernière page"
+            >
+              <ChevronsRight className="h-4 w-4" />
             </Button>
           </div>
         </div>

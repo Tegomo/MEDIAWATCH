@@ -22,6 +22,7 @@ SCRAPER_REGISTRY: dict[str, Type[MediaScraper]] = {
     "AbidjanNet": AbidjanNet,
     "Koaci": Koaci,
     "Linfodrome": Linfodrome,
+    "AipRss": AipRss,
 }
 
 

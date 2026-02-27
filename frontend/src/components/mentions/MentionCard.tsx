@@ -1,6 +1,6 @@
-import { formatDistanceToNow } from 'date-fns'
+import { formatDistanceToNow, format } from 'date-fns'
 import { fr } from 'date-fns/locale'
-import { ExternalLink, Clock, Newspaper } from 'lucide-react'
+import { ExternalLink, Clock, Newspaper, CalendarDays } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 
@@ -65,6 +65,14 @@ export default function MentionCard({ mention, onClick }: MentionCardProps) {
                 <span className="flex items-center gap-1">
                   <Newspaper className="h-3 w-3" />
                   {mention.article.source.name}
+                </span>
+              )}
+
+              {/* Published date */}
+              {mention.article?.published_at && (
+                <span className="flex items-center gap-1">
+                  <CalendarDays className="h-3 w-3" />
+                  {format(new Date(mention.article.published_at), 'dd MMM yyyy', { locale: fr })}
                 </span>
               )}
 

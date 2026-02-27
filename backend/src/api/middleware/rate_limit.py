@@ -31,10 +31,17 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if self._redis is None:
             try:
                 import redis
-                self._redis = redis.from_url(settings.redis_url, socket_timeout=1)
+                self._redis = redis.from_url(
+                    settings.redis_url,
+                    socket_timeout=1,
+                    socket_connect_timeout=1,
+                    retry_on_timeout=False,
+                )
                 self._redis.ping()
             except Exception:
-                self._redis = None
+                self._redis = False  # Mark as unavailable
+        if self._redis is False:
+            return None
         return self._redis
 
     def _get_client_id(self, request: Request) -> str:

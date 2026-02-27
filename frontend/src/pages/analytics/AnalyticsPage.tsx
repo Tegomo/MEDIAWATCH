@@ -1,7 +1,8 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { TrendingUp, TrendingDown, Minus, BarChart3 } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { TrendingUp, TrendingDown, Minus, BarChart3, Play, Loader2 } from 'lucide-react'
 import TrendChart from '@/components/analytics/TrendChart'
 import SourceChart from '@/components/analytics/SourceChart'
 import api from '@/services/api'
@@ -44,6 +45,87 @@ interface TopKeywordsResponse {
 
 export default function AnalyticsPage() {
   const [trendDays, setTrendDays] = useState(7)
+  const [scanning, setScanning] = useState(false)
+  const [scanProgress, setScanProgress] = useState('')
+  const [scanResult, setScanResult] = useState<string | null>(null)
+  const queryClient = useQueryClient()
+
+  const handleScan = async () => {
+    setScanning(true)
+    setScanResult(null)
+    setScanProgress('Démarrage…')
+    try {
+      const launch = await api.post<{ success: boolean; message: string }>('/mentions/scan')
+      if (!launch.data.success) {
+        setScanResult(launch.data.message)
+        setScanning(false)
+        return
+      }
+
+      // Poll /scan/status toutes les 3s
+      const poll = async (): Promise<void> => {
+        const s = await api.get<{
+          running: boolean
+          progress: string
+          result: {
+            success: boolean
+            message: string
+            details?: {
+              sources_scannees: number
+              liens_articles: number
+              nouveaux_articles_sources?: number
+              nouveaux_articles_recherche?: number
+              nouveaux_articles_total?: number
+              nouveaux_articles?: number
+              articles_analyses: number
+              mentions_creees: number
+              erreurs_scraping: string[]
+              erreurs_nlp: number
+            }
+          } | null
+        }>('/mentions/scan/status')
+
+        if (s.data.running) {
+          setScanProgress(s.data.progress || 'En cours…')
+          await new Promise(r => setTimeout(r, 3000))
+          return poll()
+        }
+
+        // Scan terminé
+        const r = s.data.result
+        if (r?.details) {
+          const d = r.details
+          const totalArticles = d.nouveaux_articles_total ?? d.nouveaux_articles ?? 0
+          const fromSources = d.nouveaux_articles_sources ?? totalArticles
+          const fromSearch = d.nouveaux_articles_recherche ?? 0
+          const parts = [
+            `${d.sources_scannees} sources scannées`,
+            `${d.liens_articles} liens découverts`,
+            `${fromSources} articles (sources)`,
+            `${fromSearch} articles (recherche web)`,
+            `${d.mentions_creees} mentions créées`,
+          ]
+          let msg = parts.join(' · ')
+          if (d.erreurs_scraping?.length) {
+            msg += '\n⚠️ ' + d.erreurs_scraping.join('\n⚠️ ')
+          }
+          setScanResult(msg)
+        } else {
+          setScanResult(r?.message || 'Scan terminé')
+        }
+        setScanning(false)
+        queryClient.invalidateQueries({ queryKey: ['analytics-trends'] })
+        queryClient.invalidateQueries({ queryKey: ['analytics-sources'] })
+        queryClient.invalidateQueries({ queryKey: ['analytics-keywords'] })
+      }
+
+      await poll()
+    } catch (err: unknown) {
+      const axiosErr = err as { response?: { data?: { detail?: string } } }
+      setScanResult(axiosErr?.response?.data?.detail || 'Erreur lors du scan')
+      setScanning(false)
+    }
+  }
 
   const { data: trends, isLoading: trendsLoading } = useQuery<TrendResponse>({
     queryKey: ['analytics-trends', trendDays],
@@ -72,15 +154,33 @@ export default function AnalyticsPage() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div>
-        <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
-          <BarChart3 className="h-6 w-6" />
-          Analyses et Tendances
-        </h1>
-        <p className="text-muted-foreground">
-          Visualisez l'évolution des mentions et la répartition par sources
-        </p>
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
+            <BarChart3 className="h-6 w-6" />
+            Analyses et Tendances
+          </h1>
+          <p className="text-muted-foreground">
+            Visualisez l'évolution des mentions et la répartition par sources
+          </p>
+        </div>
+        <Button onClick={handleScan} disabled={scanning} className="gap-2">
+          {scanning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+          {scanning ? 'Analyse en cours…' : 'Lancer l\'analyse'}
+        </Button>
       </div>
+
+      {scanning && scanProgress && (
+        <div className="rounded-md border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">
+          ⏳ {scanProgress}
+        </div>
+      )}
+
+      {scanResult && (
+        <div className="whitespace-pre-line rounded-md border bg-muted/50 p-3 text-sm">
+          {scanResult}
+        </div>
+      )}
 
       {/* Summary cards */}
       {trends && (

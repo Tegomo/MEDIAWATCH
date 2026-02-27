@@ -1,7 +1,13 @@
 """Schémas pour l'authentification et l'inscription"""
 from typing import Optional
+from enum import Enum
 from pydantic import BaseModel, EmailStr, Field, field_validator
-from src.models.organization import SubscriptionPlan
+
+
+class SubscriptionPlan(str, Enum):
+    BASIC = "BASIC"
+    PRO = "PRO"
+    ENTERPRISE = "ENTERPRISE"
 
 
 class SignupRequest(BaseModel):

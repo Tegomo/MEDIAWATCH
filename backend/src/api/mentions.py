@@ -2,14 +2,21 @@
 from typing import Optional
 from uuid import UUID
 from datetime import datetime
+from urllib.parse import urlparse
+import asyncio
+import hashlib
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy.orm import Session
+from pydantic import BaseModel
 
 from src.db.base import get_db
+from src.db.supabase_client import SupabaseDB
 from src.api.auth import get_current_active_user
-from src.models.user import User
 from src.services.mention_service import MentionService
+from src.services.scraping.jina_reader import get_jina_reader
+from src.services.ai.openrouter import get_openrouter_service, REJET_MARKER
+from src.services.ai.content_filter import is_valid_article, is_blocked_url, clean_markdown
 from src.schemas.mention import (
     MentionResponse,
     MentionDetailResponse,
@@ -19,47 +26,59 @@ from src.schemas.mention import (
     KeywordBrief,
 )
 
+_scan_logger = logging.getLogger("scan")
+
+# État global du scan (dict en mémoire, suffisant pour single-worker)
+_scan_state = {
+    "running": False,
+    "progress": "",
+    "result": None,
+}
+
 router = APIRouter(prefix="/mentions", tags=["Mentions"])
 
 
-def _mention_to_response(mention) -> MentionResponse:
-    """Convertit un objet Mention en MentionResponse."""
+def _mention_to_response(mention: dict) -> MentionResponse:
+    """Convertit un dict mention Supabase en MentionResponse."""
     article_resp = None
-    if mention.article:
+    article = mention.get("article")
+    if article:
         source_resp = None
-        if mention.article.source:
+        source = article.get("source")
+        if source:
             source_resp = SourceResponse(
-                id=mention.article.source.id,
-                name=mention.article.source.name,
-                url=mention.article.source.url,
-                type=mention.article.source.type.value,
+                id=source["id"],
+                name=source["name"],
+                url=source["url"],
+                type=source["type"],
             )
         article_resp = ArticleResponse(
-            id=mention.article.id,
-            title=mention.article.title,
-            url=mention.article.url,
-            author=mention.article.author,
-            published_at=mention.article.published_at,
+            id=article["id"],
+            title=article["title"],
+            url=article["url"],
+            author=article.get("author"),
+            published_at=article["published_at"],
             source=source_resp,
         )
 
     keyword_resp = None
-    if mention.keyword:
+    keyword = mention.get("keyword")
+    if keyword:
         keyword_resp = KeywordBrief(
-            id=mention.keyword.id,
-            text=mention.keyword.text,
-            category=mention.keyword.category.value,
+            id=keyword["id"],
+            text=keyword["text"],
+            category=keyword["category"],
         )
 
     return MentionResponse(
-        id=mention.id,
-        matched_text=mention.matched_text,
-        match_context=mention.match_context,
-        sentiment_score=mention.sentiment_score,
-        sentiment_label=mention.sentiment_label.value,
-        visibility_score=mention.visibility_score,
-        theme=mention.theme.value if mention.theme else None,
-        detected_at=mention.detected_at,
+        id=mention["id"],
+        matched_text=mention["matched_text"],
+        match_context=mention["match_context"],
+        sentiment_score=mention["sentiment_score"],
+        sentiment_label=mention["sentiment_label"],
+        visibility_score=mention["visibility_score"],
+        theme=mention.get("theme"),
+        detected_at=mention["detected_at"],
         keyword=keyword_resp,
         article=article_resp,
     )
@@ -76,8 +95,8 @@ async def list_mentions(
     date_to: Optional[datetime] = Query(None),
     search: Optional[str] = Query(None),
     theme: Optional[str] = Query(None),
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_active_user),
+    db: SupabaseDB = Depends(get_db),
 ) -> MentionListResponse:
     """
     Liste les mentions pour l'organisation de l'utilisateur.
@@ -85,7 +104,7 @@ async def list_mentions(
     """
     service = MentionService(db)
     mentions, total = service.list_mentions(
-        organization_id=current_user.organization_id,
+        organization_id=current_user["organization_id"],
         limit=limit,
         offset=offset,
         keyword_id=keyword_id,
@@ -105,146 +124,349 @@ async def list_mentions(
     )
 
 
-@router.post("/scan")
-async def scan_mentions(
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db),
+async def _db_call(fn, *args, **kwargs):
+    """Exécute un appel SupabaseDB synchrone sans bloquer l'event loop."""
+    return await asyncio.to_thread(fn, *args, **kwargs)
+
+
+async def _run_scan(
+    org_id: str,
+    keyword_id: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
 ):
+    """Exécute le scan en arrière-plan. Met à jour _scan_state au fur et à mesure.
+    
+    Args:
+        org_id: ID de l'organisation
+        keyword_id: Si fourni, ne scanner que ce mot-clé
+        date_from: Date début (ISO) pour filtrer la recherche web
+        date_to: Date fin (ISO) pour filtrer la recherche web
     """
-    Lance un scan manuel: scrape les sources actives puis traite les articles
-    avec le pipeline NLP pour détecter de nouvelles mentions.
-    """
-    from src.models.source import Source
-    from src.models.article import Article
-    from src.models.keyword import Keyword
-    from src.models.mention import Mention, SentimentLabel, Theme
-    from src.services.scraping.registry import get_scraper
-    from src.services.scraping.deduplication import DeduplicationService
-    import asyncio
+    db = SupabaseDB()
 
-    org_id = current_user.organization_id
+    try:
+        kw_filters = {"organization_id": f"eq.{org_id}", "enabled": f"eq.true"}
+        if keyword_id:
+            kw_filters["id"] = f"eq.{keyword_id}"
+        active_keywords = await _db_call(db.select, "keywords", **kw_filters)
+        if not active_keywords:
+            _scan_state["result"] = {"success": False, "message": "Aucun mot-clé actif" + (" pour cet ID." if keyword_id else ".")}
+            return
 
-    # Vérifier que l'org a des mots-clés actifs
-    active_keywords = (
-        db.query(Keyword)
-        .filter(Keyword.organization_id == org_id, Keyword.enabled.is_(True))
-        .all()
-    )
-    if not active_keywords:
-        return {
-            "success": False,
-            "message": "Aucun mot-clé actif. Ajoutez des mots-clés avant de lancer un scan.",
-        }
+        jina = get_jina_reader()
+        ai = get_openrouter_service()
+        ai_enabled = ai.is_configured
+        if ai_enabled:
+            _scan_logger.info(f"IA activée (modèle: {ai.model})")
+        else:
+            _scan_logger.info("IA non configurée, stockage du contenu brut")
+        sources = await _db_call(db.select, "sources", scraping_enabled=f"eq.true")
+        _scan_state["progress"] = f"0/{len(sources)} sources"
+        _scan_logger.info(f"Scan: {len(sources)} sources, {len(active_keywords)} mots-clés")
 
-    # 1. Scraper les sources actives
-    sources = (
-        db.query(Source)
-        .filter(Source.scraping_enabled.is_(True))
-        .all()
-    )
+        total_article_links = 0
+        total_new_articles = 0
+        scrape_errors: list[str] = []
+        MAX_ARTICLES_PER_SOURCE = 5
 
-    total_scraped = 0
-    total_new_articles = 0
-    scrape_errors = []
+        for i, source in enumerate(sources):
+            source_url = source["url"]
+            source_name = source["name"]
+            domain = urlparse(source_url).netloc.replace("www.", "")
+            _scan_state["progress"] = f"{i+1}/{len(sources)} — {source_name}"
 
-    for source in sources:
-        scraper = get_scraper(source.scraper_class)
-        if not scraper:
-            scrape_errors.append(f"{source.name}: scraper '{source.scraper_class}' introuvable")
-            continue
-
-        try:
-            # Timeout de 45s par source pour éviter de bloquer tout le scan
-            articles = await asyncio.wait_for(scraper.scrape(), timeout=45)
-
-            total_scraped += len(articles)
-
-            dedup = DeduplicationService(db)
-            new_articles = dedup.filter_new_articles(articles, source.id)
-
-            for scraped in new_articles:
-                article = Article(
-                    title=scraped.title,
-                    url=scraped.url,
-                    content_hash=scraped.content_hash,
-                    raw_content=scraped.raw_content,
-                    cleaned_content=scraped.cleaned_content,
-                    author=scraped.author,
-                    published_at=scraped.published_at,
-                    source_id=source.id,
-                )
-                db.add(article)
-                total_new_articles += 1
-
-            source.last_scrape_at = datetime.utcnow()
-            source.last_success_at = datetime.utcnow()
-            source.consecutive_failures = 0
-            source.last_error_message = None
-            db.commit()
-
-        except Exception as e:
-            db.rollback()
-            scrape_errors.append(f"{source.name}: {str(e)[:100]}")
             try:
-                source = db.query(Source).filter(Source.id == source.id).first()
-                if source:
-                    source.consecutive_failures += 1
-                    source.last_error_message = str(e)[:500]
-                    source.last_scrape_at = datetime.utcnow()
-                    db.commit()
-            except Exception:
-                pass
+                _scan_logger.info(f"Scan [{source_name}]: découverte liens sur {source_url}")
+                article_urls = await asyncio.wait_for(
+                    jina.extract_article_links(source_url, domain),
+                    timeout=60,
+                )
+                total_article_links += len(article_urls)
+                _scan_logger.info(f"Scan [{source_name}]: {len(article_urls)} liens")
 
-    # 2. Traiter les articles non traités par NLP
-    pending_articles = (
-        db.query(Article)
-        .filter(Article.nlp_processed.is_(None))
-        .order_by(Article.scraped_at.desc())
-        .limit(100)
-        .all()
-    )
+                if not article_urls:
+                    scrape_errors.append(f"{source_name}: aucun lien trouvé")
+                    await _db_call(db.update, "sources", {
+                        "last_scrape_at": datetime.utcnow().isoformat(),
+                        "last_error_message": "Aucun lien d'article trouvé",
+                    }, id=f"eq.{source['id']}")
+                    continue
 
-    mentions_created = 0
-    nlp_errors = 0
+                new_for_source = 0
+                for article_url in article_urls:
+                    if new_for_source >= MAX_ARTICLES_PER_SOURCE:
+                        break
 
-    if pending_articles:
-        try:
-            from src.services.nlp.sentiment import SentimentAnalyzer
-            from src.services.nlp.entities import EntityExtractor
+                    existing = await _db_call(db.select_one, "articles", url=f"eq.{article_url}")
+                    if existing:
+                        continue
 
-            sentiment_analyzer = SentimentAnalyzer()
-            entity_extractor = EntityExtractor()
-        except Exception:
-            sentiment_analyzer = None
-            entity_extractor = None
+                    try:
+                        _scan_state["progress"] = f"{i+1}/{len(sources)} — {source_name} — article {new_for_source+1}"
+                        data = await asyncio.wait_for(jina.read_url(article_url), timeout=60)
+                        if not data:
+                            continue
+
+                        title = data.get("title", "")
+                        content = data.get("content", "")
+                        if not title or len(content) < 100:
+                            continue
+
+                        # Filtre de qualité : rejeter les pages non-articles
+                        if not is_valid_article(title, content):
+                            _scan_logger.info(f"Scan [{source_name}]: rejeté (qualité): {title[:50]}")
+                            continue
+
+                        content_hash = hashlib.sha256(content.encode()).hexdigest()
+                        now = datetime.utcnow().isoformat()
+
+                        published_at = now
+                        if data.get("published_date"):
+                            parsed = jina.parse_published_date(data["published_date"])
+                            if parsed:
+                                published_at = parsed.isoformat()
+
+                        # Nettoyage IA si configuré, sinon nettoyage basique markdown
+                        cleaned = clean_markdown(content)
+                        if ai_enabled:
+                            try:
+                                _scan_state["progress"] = f"{i+1}/{len(sources)} — {source_name} — IA article {new_for_source+1}"
+                                ai_result = await asyncio.wait_for(
+                                    ai.cleanup_article(content, title),
+                                    timeout=120,
+                                )
+                                if ai_result == REJET_MARKER:
+                                    _scan_logger.info(f"Scan [{source_name}]: rejeté par IA: {title[:50]}")
+                                    continue
+                                if ai_result:
+                                    cleaned = ai_result
+                                    _scan_logger.info(f"Scan [{source_name}]: IA nettoyé: {title[:40]}")
+                            except Exception as ai_err:
+                                _scan_logger.warning(f"Scan [{source_name}]: IA erreur: {str(ai_err)[:80]}")
+
+                        await _db_call(db.insert_one, "articles", {
+                            "title": title,
+                            "url": article_url,
+                            "content_hash": content_hash,
+                            "raw_content": content,
+                            "cleaned_content": cleaned,
+                            "author": data.get("author"),
+                            "published_at": published_at,
+                            "scraped_at": now,
+                            "source_id": source["id"],
+                        })
+                        total_new_articles += 1
+                        new_for_source += 1
+                        _scan_logger.info(f"Scan [{source_name}]: sauvé: {title[:60]}")
+
+                    except asyncio.TimeoutError:
+                        scrape_errors.append(f"{source_name}: timeout article")
+                    except Exception as e:
+                        scrape_errors.append(f"{source_name}: {str(e)[:80]}")
+
+                await _db_call(db.update, "sources", {
+                    "last_scrape_at": datetime.utcnow().isoformat(),
+                    "last_success_at": datetime.utcnow().isoformat(),
+                    "consecutive_failures": 0,
+                    "last_error_message": None,
+                }, id=f"eq.{source['id']}")
+
+            except asyncio.TimeoutError:
+                scrape_errors.append(f"{source_name}: timeout découverte liens")
+                try:
+                    await _db_call(db.update, "sources", {
+                        "consecutive_failures": source.get("consecutive_failures", 0) + 1,
+                        "last_error_message": "Timeout découverte liens",
+                        "last_scrape_at": datetime.utcnow().isoformat(),
+                    }, id=f"eq.{source['id']}")
+                except Exception:
+                    pass
+            except Exception as e:
+                scrape_errors.append(f"{source_name}: {str(e)[:100]}")
+                try:
+                    await _db_call(db.update, "sources", {
+                        "consecutive_failures": source.get("consecutive_failures", 0) + 1,
+                        "last_error_message": str(e)[:500],
+                        "last_scrape_at": datetime.utcnow().isoformat(),
+                    }, id=f"eq.{source['id']}")
+                except Exception:
+                    pass
+
+        # ── Phase 2 : Recherche globale internet via Jina Search ──
+        _scan_state["progress"] = "Recherche globale internet…"
+        _scan_logger.info("Phase 2: recherche globale internet")
+        MAX_SEARCH_RESULTS = 5
+        search_new_articles = 0
+        search_errors: list[str] = []
+
+        # Créer ou récupérer la source spéciale "Recherche Web"
+        web_search_source = await _db_call(
+            db.select_one, "sources", name="eq.Recherche Web",
+        )
+        if not web_search_source:
+            now_ts = datetime.utcnow().isoformat()
+            web_search_source = await _db_call(db.insert_one, "sources", {
+                "name": "Recherche Web",
+                "url": "https://s.jina.ai",
+                "type": "API",
+                "scraper_class": "jina_search",
+                "scraping_enabled": False,
+                "prestige_score": 30.0,
+                "consecutive_failures": 0,
+                "created_at": now_ts,
+                "updated_at": now_ts,
+            })
+            _scan_logger.info("Source 'Recherche Web' créée")
+        web_search_source_id = web_search_source["id"]
+
+        for ki, keyword in enumerate(active_keywords):
+            kw_text = keyword.get("text", "")
+            if not kw_text:
+                continue
+
+            # Enrichir la requête de recherche avec la période si fournie
+            search_query = kw_text
+            if date_from or date_to:
+                if date_from and date_to:
+                    search_query = f"{kw_text} after:{date_from[:10]} before:{date_to[:10]}"
+                elif date_from:
+                    search_query = f"{kw_text} after:{date_from[:10]}"
+                elif date_to:
+                    search_query = f"{kw_text} before:{date_to[:10]}"
+
+            _scan_state["progress"] = f"Recherche web {ki+1}/{len(active_keywords)} — \"{kw_text}\""
+            try:
+                results = await asyncio.wait_for(
+                    jina.search_web(search_query, num_results=MAX_SEARCH_RESULTS),
+                    timeout=60,
+                )
+                _scan_logger.info(f"Search [{kw_text}]: {len(results)} résultats")
+
+                for result in results:
+                    result_url = result.get("url", "")
+                    if not result_url:
+                        continue
+
+                    # Filtrer les réseaux sociaux et domaines non pertinents
+                    if is_blocked_url(result_url):
+                        _scan_logger.info(f"Search [{kw_text}]: URL bloquée: {result_url[:60]}")
+                        continue
+
+                    existing = await _db_call(db.select_one, "articles", url=f"eq.{result_url}")
+                    if existing:
+                        continue
+
+                    try:
+                        data = await asyncio.wait_for(jina.read_url(result_url), timeout=60)
+                        if not data:
+                            continue
+
+                        title = data.get("title", "")
+                        content = data.get("content", "")
+                        if not title or len(content) < 100:
+                            continue
+
+                        # Filtre de qualité : rejeter les pages non-articles
+                        if not is_valid_article(title, content):
+                            _scan_logger.info(f"Search [{kw_text}]: rejeté (qualité): {title[:50]}")
+                            continue
+
+                        content_hash = hashlib.sha256(content.encode()).hexdigest()
+                        now = datetime.utcnow().isoformat()
+
+                        published_at = now
+                        if data.get("published_date"):
+                            parsed_date = jina.parse_published_date(data["published_date"])
+                            if parsed_date:
+                                published_at = parsed_date.isoformat()
+
+                        # Nettoyage IA si configuré, sinon nettoyage basique markdown
+                        cleaned = clean_markdown(content)
+                        if ai_enabled:
+                            try:
+                                _scan_state["progress"] = f"Recherche web {ki+1}/{len(active_keywords)} — IA \"{kw_text}\""
+                                ai_result = await asyncio.wait_for(
+                                    ai.cleanup_article(content, title),
+                                    timeout=120,
+                                )
+                                if ai_result == REJET_MARKER:
+                                    _scan_logger.info(f"Search [{kw_text}]: rejeté par IA: {title[:50]}")
+                                    continue
+                                if ai_result:
+                                    cleaned = ai_result
+                                    _scan_logger.info(f"Search [{kw_text}]: IA nettoyé: {title[:40]}")
+                            except Exception as ai_err:
+                                _scan_logger.warning(f"Search [{kw_text}]: IA erreur: {str(ai_err)[:80]}")
+
+                        await _db_call(db.insert_one, "articles", {
+                            "title": title,
+                            "url": result_url,
+                            "content_hash": content_hash,
+                            "raw_content": content,
+                            "cleaned_content": cleaned,
+                            "author": data.get("author"),
+                            "published_at": published_at,
+                            "scraped_at": now,
+                            "source_id": web_search_source_id,
+                        })
+                        search_new_articles += 1
+                        _scan_logger.info(f"Search [{kw_text}]: sauvé: {title[:60]}")
+
+                    except asyncio.TimeoutError:
+                        search_errors.append(f"search({kw_text}): timeout article")
+                    except Exception as e:
+                        search_errors.append(f"search({kw_text}): {str(e)[:80]}")
+
+            except asyncio.TimeoutError:
+                search_errors.append(f"search({kw_text}): timeout recherche")
+            except Exception as e:
+                search_errors.append(f"search({kw_text}): {str(e)[:80]}")
+
+        total_new_articles += search_new_articles
+        scrape_errors.extend(search_errors)
+        _scan_logger.info(f"Recherche globale: {search_new_articles} nouveaux articles")
+
+        # ── Phase 3 : Matching mots-clés ──
+        _scan_state["progress"] = "Analyse NLP des articles…"
+        nlp_filters = {"nlp_processed": "is.null", "order": "scraped_at.desc", "limit": "100"}
+        if date_from:
+            nlp_filters["published_at"] = f"gte.{date_from}"
+        if date_to:
+            # Supabase ne supporte qu'un seul filtre par colonne via kwargs,
+            # donc on filtre date_to côté Python si date_from est aussi présent
+            pass
+        pending_articles = await _db_call(db.select, "articles", **nlp_filters)
+        # Filtre date_to côté Python si besoin
+        if date_to:
+            pending_articles = [a for a in pending_articles if a.get("published_at", "") <= date_to]
+
+        mentions_created = 0
+        nlp_errors = 0
 
         for article in pending_articles:
             try:
-                content = article.cleaned_content
+                content = article.get("cleaned_content", "")
                 if not content:
-                    article.nlp_processed = datetime.utcnow()
+                    await _db_call(db.update, "articles", {"nlp_processed": datetime.utcnow().isoformat()}, id=f"eq.{article['id']}")
                     continue
 
                 content_lower = content.lower()
-
                 for keyword in active_keywords:
-                    kw_lower = keyword.normalized_text.lower()
+                    kw_text = keyword.get("normalized_text") or keyword.get("text", "")
+                    if not kw_text:
+                        continue
+                    kw_lower = kw_text.lower()
                     if kw_lower not in content_lower:
                         continue
 
-                    # Vérifier doublon
-                    existing = (
-                        db.query(Mention)
-                        .filter(
-                            Mention.keyword_id == keyword.id,
-                            Mention.article_id == article.id,
-                        )
-                        .first()
+                    existing = await _db_call(
+                        db.select_one, "mentions",
+                        keyword_id=f"eq.{keyword['id']}", article_id=f"eq.{article['id']}",
                     )
                     if existing:
                         continue
 
-                    # Contexte
                     idx = content_lower.find(kw_lower)
                     start = max(0, idx - 200)
                     end = min(len(content), idx + len(kw_lower) + 200)
@@ -254,90 +476,118 @@ async def scan_mentions(
                     if end < len(content):
                         context = context + "..."
 
-                    # Sentiment
-                    if sentiment_analyzer:
-                        sentiment = sentiment_analyzer.analyze_context(content, keyword.text)
-                        sentiment_label_map = {
-                            "positive": SentimentLabel.POSITIVE,
-                            "negative": SentimentLabel.NEGATIVE,
-                            "neutral": SentimentLabel.NEUTRAL,
-                        }
-                        label = sentiment_label_map.get(sentiment.label, SentimentLabel.NEUTRAL)
-                        score = sentiment.score
-                    else:
-                        label = SentimentLabel.NEUTRAL
-                        score = 0.0
-
-                    # Entités
-                    if entity_extractor:
-                        entities = entity_extractor.extract_from_context(content, keyword.text)
-                        entities_dict = entities.to_dict()
-                    else:
-                        entities_dict = {}
-
-                    # Thème
-                    from src.workers.tasks.nlp import _detect_theme
-                    theme = _detect_theme(content, None)
-
-                    mention = Mention(
-                        keyword_id=keyword.id,
-                        article_id=article.id,
-                        matched_text=keyword.text,
-                        match_context=context,
-                        sentiment_score=score,
-                        sentiment_label=label,
-                        visibility_score=0.5,
-                        theme=theme,
-                        extracted_entities=entities_dict,
-                        detected_at=datetime.utcnow(),
-                    )
-                    db.add(mention)
+                    now = datetime.utcnow().isoformat()
+                    await _db_call(db.insert_one, "mentions", {
+                        "keyword_id": keyword["id"],
+                        "article_id": article["id"],
+                        "matched_text": keyword["text"],
+                        "match_context": context,
+                        "sentiment_score": 0.0,
+                        "sentiment_label": "NEUTRAL",
+                        "visibility_score": 0.5,
+                        "detected_at": now,
+                    })
                     mentions_created += 1
+                    await _db_call(db.update, "keywords", {
+                        "total_mentions_count": keyword.get("total_mentions_count", 0) + 1,
+                        "last_mention_at": now,
+                    }, id=f"eq.{keyword['id']}")
 
-                    keyword.total_mentions_count += 1
-                    keyword.last_mention_at = datetime.utcnow()
-
-                article.nlp_processed = datetime.utcnow()
-                db.commit()
-
-            except Exception as e:
-                db.rollback()
+                await _db_call(db.update, "articles", {"nlp_processed": datetime.utcnow().isoformat()}, id=f"eq.{article['id']}")
+            except Exception:
                 nlp_errors += 1
 
+        _scan_state["result"] = {
+            "success": True,
+            "message": "Scan terminé",
+            "details": {
+                "sources_scannees": len(sources),
+                "liens_articles": total_article_links,
+                "nouveaux_articles_sources": total_new_articles - search_new_articles,
+                "nouveaux_articles_recherche": search_new_articles,
+                "nouveaux_articles_total": total_new_articles,
+                "articles_analyses": len(pending_articles),
+                "mentions_creees": mentions_created,
+                "erreurs_scraping": scrape_errors,
+                "erreurs_nlp": nlp_errors,
+            },
+        }
+        _scan_logger.info(f"Scan terminé: {total_new_articles} articles ({search_new_articles} via recherche), {mentions_created} mentions")
+
+    except Exception as e:
+        _scan_state["result"] = {"success": False, "message": f"Erreur scan: {str(e)[:200]}"}
+        _scan_logger.error(f"Scan erreur fatale: {e}", exc_info=True)
+    finally:
+        _scan_state["running"] = False
+
+
+class ScanRequest(BaseModel):
+    keyword_id: Optional[str] = None
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+
+
+@router.post("/scan")
+async def scan_mentions(
+    body: ScanRequest = ScanRequest(),
+    current_user: dict = Depends(get_current_active_user),
+):
+    """Lance un scan en arrière-plan. Retourne immédiatement.
+    
+    Body optionnel:
+        keyword_id: Scanner uniquement ce mot-clé
+        date_from: Date début (ISO) pour filtrer la recherche
+        date_to: Date fin (ISO) pour filtrer la recherche
+    """
+    if _scan_state["running"]:
+        return {"success": False, "message": "Un scan est déjà en cours.", "progress": _scan_state["progress"]}
+
+    org_id = current_user["organization_id"]
+    _scan_state["running"] = True
+    _scan_state["progress"] = "Démarrage…"
+    _scan_state["result"] = None
+
+    asyncio.create_task(_run_scan(
+        org_id,
+        keyword_id=body.keyword_id,
+        date_from=body.date_from,
+        date_to=body.date_to,
+    ))
+
+    return {"success": True, "message": "Scan lancé en arrière-plan."}
+
+
+@router.get("/scan/status")
+async def scan_status(
+    current_user: dict = Depends(get_current_active_user),
+):
+    """Retourne l'état du scan en cours ou le dernier résultat."""
     return {
-        "success": True,
-        "message": f"Scan terminé",
-        "details": {
-            "sources_scannees": len(sources),
-            "articles_trouves": total_scraped,
-            "nouveaux_articles": total_new_articles,
-            "articles_analyses": len(pending_articles),
-            "mentions_creees": mentions_created,
-            "erreurs_scraping": scrape_errors,
-            "erreurs_nlp": nlp_errors,
-        },
+        "running": _scan_state["running"],
+        "progress": _scan_state["progress"],
+        "result": _scan_state["result"],
     }
 
 
 @router.get("/stats")
 async def get_mention_stats(
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_active_user),
+    db: SupabaseDB = Depends(get_db),
 ):
     """Statistiques rapides des mentions pour le dashboard."""
     service = MentionService(db)
-    return service.get_stats(current_user.organization_id)
+    return service.get_stats(current_user["organization_id"])
 
 
 @router.get("/{mention_id}", response_model=MentionDetailResponse)
 async def get_mention(
     mention_id: UUID,
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_active_user),
+    db: SupabaseDB = Depends(get_db),
 ) -> MentionDetailResponse:
     """Récupère les détails complets d'une mention."""
     service = MentionService(db)
-    mention = service.get_mention(mention_id, current_user.organization_id)
+    mention = service.get_mention(mention_id, current_user["organization_id"])
 
     if not mention:
         raise HTTPException(
@@ -346,10 +596,11 @@ async def get_mention(
         )
 
     base = _mention_to_response(mention)
+    article = mention.get("article", {})
 
     return MentionDetailResponse(
         **base.model_dump(),
-        extracted_entities=mention.extracted_entities,
-        alert_sent=mention.alert_sent,
-        article_content=mention.article.cleaned_content if mention.article else None,
+        extracted_entities=mention.get("extracted_entities"),
+        alert_sent=mention.get("alert_sent"),
+        article_content=article.get("cleaned_content") if article else None,
     )

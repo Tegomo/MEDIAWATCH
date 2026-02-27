@@ -1,20 +1,16 @@
-import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom'
-import { BarChart3, Bell, LogOut, Search, TrendingUp, Server, Building2 } from 'lucide-react'
+import { useState } from 'react'
+import { Outlet, useNavigate } from 'react-router-dom'
+import { LogOut, User, Moon, Sun } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { signOut } from '@/services/supabase'
-
-const navItems = [
-  { path: '/dashboard', label: 'Dashboard', icon: BarChart3 },
-  { path: '/keywords', label: 'Mots-clés', icon: Search },
-  { path: '/analytics', label: 'Analyses', icon: TrendingUp },
-  { path: '/settings/alerts', label: 'Alertes', icon: Bell },
-  { path: '/admin/sources', label: 'Sources', icon: Server },
-  { path: '/admin/organizations', label: 'Clients', icon: Building2 },
-]
+import Sidebar from './Sidebar'
+import { cn } from '@/lib/utils'
+import { useTheme } from '@/lib/useTheme'
 
 export default function DashboardLayout() {
   const navigate = useNavigate()
-  const location = useLocation()
+  const [collapsed, setCollapsed] = useState(false)
+  const { theme, toggleTheme } = useTheme()
 
   const handleLogout = async () => {
     await signOut()
@@ -23,45 +19,49 @@ export default function DashboardLayout() {
 
   return (
     <div className="min-h-screen bg-background">
-      {/* Header */}
-      <header className="sticky top-0 z-50 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        <div className="container flex h-14 items-center">
-          <Link to="/" className="mr-6 flex items-center space-x-2">
-            <span className="text-xl font-bold text-primary">MediaWatch CI</span>
-          </Link>
+      <Sidebar collapsed={collapsed} onToggle={() => setCollapsed(!collapsed)} />
 
-          <nav className="flex items-center space-x-1">
-            {navItems.map((item) => {
-              const Icon = item.icon
-              const isActive = location.pathname === item.path
-              return (
-                <Link key={item.path} to={item.path}>
-                  <Button
-                    variant={isActive ? 'secondary' : 'ghost'}
-                    size="sm"
-                    className="gap-2"
-                  >
-                    <Icon className="h-4 w-4" />
-                    {item.label}
-                  </Button>
-                </Link>
-              )
-            })}
-          </nav>
-
-          <div className="ml-auto">
-            <Button variant="ghost" size="sm" onClick={handleLogout} className="gap-2">
+      {/* Main area */}
+      <div
+        className={cn(
+          'flex min-h-screen flex-col transition-all duration-300',
+          collapsed ? 'ml-16' : 'ml-60',
+        )}
+      >
+        {/* Top bar */}
+        <header className="sticky top-0 z-30 flex h-14 items-center justify-end gap-3 border-b border-border bg-background/80 px-6 backdrop-blur">
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-muted-foreground hover:text-foreground"
+              onClick={toggleTheme}
+              title={theme === 'dark' ? 'Mode clair' : 'Mode sombre'}
+            >
+              {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+            </Button>
+            <div className="h-5 w-px bg-border" />
+            <div className="flex items-center gap-2 rounded-md bg-muted px-3 py-1.5 text-sm text-muted-foreground">
+              <User className="h-3.5 w-3.5" />
+              <span>Admin</span>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleLogout}
+              className="gap-2 text-muted-foreground hover:text-foreground"
+            >
               <LogOut className="h-4 w-4" />
               Déconnexion
             </Button>
           </div>
-        </div>
-      </header>
+        </header>
 
-      {/* Main Content */}
-      <main className="container py-6">
-        <Outlet />
-      </main>
+        {/* Page content */}
+        <main className="flex-1 p-6">
+          <Outlet />
+        </main>
+      </div>
     </div>
   )
 }

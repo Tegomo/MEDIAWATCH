@@ -2,7 +2,6 @@
 from datetime import datetime
 
 from fastapi import APIRouter
-from sqlalchemy import text
 
 from src.db.base import SessionLocal
 from src.lib.logger import logger
@@ -22,12 +21,14 @@ async def health_check():
         "services": {},
     }
 
-    # Check DB
+    # Check DB (Supabase REST)
     try:
         db = SessionLocal()
-        db.execute(text("SELECT 1"))
-        db.close()
-        checks["services"]["database"] = {"status": "ok"}
+        if db.health_check():
+            checks["services"]["database"] = {"status": "ok"}
+        else:
+            checks["services"]["database"] = {"status": "error", "detail": "Health check failed"}
+            checks["status"] = "degraded"
     except Exception as e:
         checks["services"]["database"] = {"status": "error", "detail": str(e)}
         checks["status"] = "degraded"

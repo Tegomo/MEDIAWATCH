@@ -1,9 +1,12 @@
-"""Scraper pour Koaci.com - Site d'actualités ivoirien (rendu JavaScript, nécessite Playwright)"""
+"""Scraper pour Koaci.com - Site d'actualités ivoirien"""
+import httpx
 from datetime import datetime
 from typing import Optional
+from selectolax.parser import HTMLParser
 
 from src.config import settings
 from src.services.scraping.base import MediaScraper, ScrapedArticle
+from src.services.scraping.jina_reader import get_jina_reader
 
 
 class Koaci(MediaScraper):
@@ -15,127 +18,82 @@ class Koaci(MediaScraper):
             base_url="https://www.koaci.com",
         )
 
-    async def _get_browser_page(self):
-        """Crée une page Playwright."""
-        from playwright.async_api import async_playwright
-
-        pw = await async_playwright().start()
-        browser = await pw.chromium.launch(headless=settings.playwright_headless)
-        context = await browser.new_context(
-            user_agent=self.user_agent,
-            locale="fr-FR",
-        )
-        page = await context.new_page()
-        return pw, browser, page
-
     async def get_article_urls(self, max_pages: int = 3) -> list[str]:
-        """Récupère les URLs des articles via Playwright (rendu JS)."""
+        """Récupère les URLs des articles depuis les pages de listing."""
         urls = []
-        pw, browser, page = await self._get_browser_page()
-
-        try:
-            for page_num in range(1, max_pages + 1):
+        async with httpx.AsyncClient(
+            headers={"User-Agent": self.user_agent},
+            timeout=30,
+            follow_redirects=True,
+        ) as client:
+            for page in range(1, max_pages + 1):
                 try:
-                    if page_num == 1:
-                        await page.goto(
-                            f"{self.base_url}/cote-divoire",
-                            wait_until="domcontentloaded",
-                            timeout=30000,
-                        )
+                    if page == 1:
+                        response = await client.get(f"{self.base_url}/cote-divoire")
                     else:
-                        await page.goto(
-                            f"{self.base_url}/cote-divoire?page={page_num}",
-                            wait_until="domcontentloaded",
-                            timeout=30000,
-                        )
+                        response = await client.get(f"{self.base_url}/cote-divoire?page={page}")
 
-                    # Attendre le chargement des articles
-                    await page.wait_for_selector(
-                        "article a, .article-link, h2 a, h3 a",
-                        timeout=10000,
-                    )
+                    if response.status_code != 200:
+                        break
 
-                    # Extraire les liens
-                    links = await page.eval_on_selector_all(
-                        "article a[href], .article-item a[href], h2 a[href], h3 a[href]",
-                        "elements => elements.map(el => el.href)",
-                    )
+                    tree = HTMLParser(response.text)
 
-                    for href in links:
-                        if (
-                            href
-                            and "koaci.com" in href
-                            and href not in urls
-                            and "/cote-divoire/" in href
-                        ):
+                    for node in tree.css("a[href]"):
+                        href = node.attributes.get("href", "")
+                        if not href or "/article/" not in href:
+                            continue
+                        if href.startswith("/"):
+                            href = f"{self.base_url}{href}"
+                        if "koaci.com" in href and href not in urls:
                             urls.append(href)
 
                 except Exception as e:
-                    self.logger.warning(f"Erreur page {page_num}: {str(e)}")
+                    self.logger.warning(f"Erreur page {page}: {str(e)}")
                     break
-
-        finally:
-            await browser.close()
-            await pw.stop()
 
         return urls
 
     async def parse_article(self, url: str) -> Optional[ScrapedArticle]:
-        """Parse un article Koaci via Playwright."""
-        pw, browser, page = await self._get_browser_page()
-
+        """Parse un article Koaci avec Jina AI Reader."""
+        jina = get_jina_reader()
+        
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-
-            # Titre
-            title_el = await page.query_selector("h1.article-title, h1.entry-title, h1")
-            if not title_el:
+            data = await jina.read_url(url)
+            if not data:
                 return None
-            title = (await title_el.inner_text()).strip()
-
-            # Contenu
-            content_el = await page.query_selector(
-                ".article-body, .article-content, .entry-content, .post-content"
-            )
-            if not content_el:
+            
+            title = data.get("title", "")
+            content = data.get("content", "")
+            
+            if not title or len(content) < 100:
                 return None
-
-            raw_content = await content_el.inner_html()
-            cleaned_content = self.clean_text(await content_el.inner_text())
-
-            if len(cleaned_content) < 100:
-                return None
-
-            # Auteur
-            author = None
-            author_el = await page.query_selector(".article-author, .author, [rel='author']")
-            if author_el:
-                author = (await author_el.inner_text()).strip()
-
-            # Date
+            
+            # Jina AI retourne déjà du markdown propre
+            cleaned_content = content
+            
+            # Date de publication
             published_at = datetime.utcnow()
-            date_el = await page.query_selector("time[datetime], .article-date, .date")
-            if date_el:
-                dt_attr = await date_el.get_attribute("datetime")
-                if dt_attr:
-                    parsed = self.extract_date(dt_attr)
-                    if parsed:
-                        published_at = parsed
-                else:
-                    date_text = (await date_el.inner_text()).strip()
-                    parsed = self.extract_date(date_text)
-                    if parsed:
-                        published_at = parsed
-
+            if data.get("published_date"):
+                parsed_date = jina.parse_published_date(data["published_date"])
+                if parsed_date:
+                    published_at = parsed_date
+            
+            # Auteur
+            author = data.get("author")
+            
             return ScrapedArticle(
                 title=title,
                 url=url,
-                raw_content=raw_content,
+                raw_content=content,  # Markdown brut
                 cleaned_content=cleaned_content,
                 published_at=published_at,
                 author=author,
+                metadata={
+                    "description": data.get("description", ""),
+                    "images": data.get("images", []),
+                }
             )
-
-        finally:
-            await browser.close()
-            await pw.stop()
+            
+        except Exception as e:
+            self.logger.error(f"Erreur Jina AI pour {url}: {str(e)}")
+            return None

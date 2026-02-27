@@ -18,8 +18,8 @@ class Settings(BaseSettings):
     secret_key: str
     api_v1_prefix: str = "/v1"
 
-    # Database
-    database_url: str
+    # Database (optionnel - utilise Supabase REST API par défaut)
+    database_url: Optional[str] = None
 
     # Supabase
     supabase_url: str
@@ -44,9 +44,9 @@ class Settings(BaseSettings):
     alert_retry_base_delay: int = 30
 
     # Stripe
-    stripe_secret_key: str
-    stripe_publishable_key: str
-    stripe_webhook_secret: str
+    stripe_secret_key: Optional[str] = None
+    stripe_publishable_key: Optional[str] = None
+    stripe_webhook_secret: Optional[str] = None
 
     # Orange Money
     orange_money_api_key: Optional[str] = None
@@ -65,6 +65,13 @@ class Settings(BaseSettings):
     scraping_user_agent: str = "MediaWatch CI Bot/1.0"
     scraping_rate_limit: int = 30
     playwright_headless: bool = True
+    
+    # Jina AI Reader
+    jina_api_key: Optional[str] = None
+
+    # OpenRouter AI (résumé/nettoyage d'articles)
+    openrouter_api_key: Optional[str] = None
+    openrouter_model: str = "google/gemini-2.0-flash-001"
 
     # Monitoring
     sentry_dsn: Optional[str] = None

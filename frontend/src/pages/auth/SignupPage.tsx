@@ -3,13 +3,14 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { Loader2 } from 'lucide-react'
+import { Loader2, Moon, Sun } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
 import PaymentForm from '@/components/payments/PaymentForm'
 import api from '@/services/api'
+import { useTheme } from '@/lib/useTheme'
 
 const signupSchema = z.object({
   email: z.string().email('Email invalide'),
@@ -62,6 +63,7 @@ export default function SignupPage() {
   const [step, setStep] = useState<'info' | 'plan' | 'payment'>('info')
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const { theme, toggleTheme } = useTheme()
 
   const {
     register,
@@ -104,7 +106,14 @@ export default function SignupPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
+    <div className="relative flex min-h-screen items-center justify-center bg-background p-4">
+      <button
+        onClick={toggleTheme}
+        className="absolute right-4 top-4 rounded-md p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        title={theme === 'dark' ? 'Mode clair' : 'Mode sombre'}
+      >
+        {theme === 'dark' ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
+      </button>
       <div className="w-full max-w-4xl">
         {/* Logo */}
         <div className="mb-8 text-center">
