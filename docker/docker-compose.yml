@@ -1,0 +1,225 @@
+# ===========================================================================
+# MediaWatch CI - Docker Compose avec Supabase local
+# ===========================================================================
+# Usage:
+#   cd docker
+#   docker compose up -d
+#
+# Services:
+#   - db          : PostgreSQL 15 (Supabase)
+#   - kong        : API Gateway (expose PostgREST + Auth sur :8000)
+#   - auth        : GoTrue (Supabase Auth)
+#   - rest        : PostgREST (Supabase REST API)
+#   - studio      : Supabase Studio (UI admin) sur :3100
+#   - redis       : Redis (rate limiting)
+#   - backend     : FastAPI backend sur :8001
+#   - frontend    : React/Vite frontend sur :80
+# ===========================================================================
+
+services:
+
+  # ─── PostgreSQL ──────────────────────────────────────────────────────────
+  db:
+    image: postgres:15-alpine
+    container_name: mw-db
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mediawatch_secret}
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./volumes/db/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ─── PostgREST (Supabase REST API) ──────────────────────────────────────
+  rest:
+    image: postgrest/postgrest:v12.2.3
+    container_name: mw-rest
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGRST_DB_URI: postgres://authenticator:${POSTGRES_PASSWORD:-mediawatch_secret}@db:5432/postgres?sslmode=disable
+      PGRST_DB_SCHEMAS: public,storage,graphql_public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: ${JWT_SECRET:-super-secret-jwt-token-with-at-least-32-characters-long}
+      PGRST_DB_USE_LEGACY_GUCS: "false"
+      PGRST_APP_SETTINGS_JWT_SECRET: ${JWT_SECRET:-super-secret-jwt-token-with-at-least-32-characters-long}
+      PGRST_APP_SETTINGS_JWT_EXP: 3600
+    restart: unless-stopped
+
+  # ─── GoTrue (Supabase Auth) ─────────────────────────────────────────────
+  auth:
+    image: supabase/gotrue:v2.158.1
+    container_name: mw-auth
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: 9999
+      API_EXTERNAL_URL: ${API_EXTERNAL_URL:-http://localhost:8000}
+
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${POSTGRES_PASSWORD:-mediawatch_secret}@db:5432/postgres?search_path=auth&sslmode=disable
+
+      GOTRUE_SITE_URL: ${SITE_URL:-http://localhost:3000}
+      GOTRUE_URI_ALLOW_LIST: ""
+      GOTRUE_DISABLE_SIGNUP: "false"
+
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_EXP: 3600
+      GOTRUE_JWT_SECRET: ${JWT_SECRET:-super-secret-jwt-token-with-at-least-32-characters-long}
+
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: "true"
+      GOTRUE_MAILER_AUTOCONFIRM: "true"
+      GOTRUE_SMTP_ADMIN_EMAIL: admin@mediawatch.ci
+      GOTRUE_SMTP_HOST: ""
+      GOTRUE_SMTP_PORT: 587
+      GOTRUE_SMTP_SENDER_NAME: MediaWatch
+
+      GOTRUE_EXTERNAL_PHONE_ENABLED: "false"
+      GOTRUE_SMS_AUTOCONFIRM: "true"
+    restart: unless-stopped
+
+  # ─── Kong API Gateway ───────────────────────────────────────────────────
+  kong:
+    image: kong:2.8.1
+    container_name: mw-kong
+    depends_on:
+      rest:
+        condition: service_started
+      auth:
+        condition: service_started
+    ports:
+      - "${KONG_HTTP_PORT:-8000}:8000/tcp"
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /tmp/kong.yml
+      KONG_DNS_ORDER: LAST,A,CNAME
+      KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth
+      KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 160k
+      KONG_NGINX_PROXY_PROXY_BUFFERS: 64 160k
+      ANON_KEY: ${ANON_KEY}
+      SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
+    volumes:
+      - ./volumes/kong/kong.yml.template:/var/lib/kong/kong.yml.template:ro
+      - ./volumes/kong/entrypoint.sh:/entrypoint.sh:ro
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    restart: unless-stopped
+
+  # ─── Supabase Studio (optionnel, UI d'admin) ────────────────────────────
+  studio:
+    image: supabase/studio:latest
+    container_name: mw-studio
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${STUDIO_PORT:-3100}:3000/tcp"
+    environment:
+      STUDIO_PG_META_URL: http://meta:8080
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mediawatch_secret}
+      DEFAULT_ORGANIZATION_NAME: MediaWatch CI
+      DEFAULT_PROJECT_NAME: MediaWatch Local
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_PUBLIC_URL: ${API_EXTERNAL_URL:-http://localhost:8000}
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      AUTH_JWT_SECRET: ${JWT_SECRET:-super-secret-jwt-token-with-at-least-32-characters-long}
+      NEXT_PUBLIC_ENABLE_LOGS: "true"
+      NEXT_ANALYTICS_BACKEND_PROVIDER: postgres
+    restart: unless-stopped
+
+  # ─── PG Meta (requis par Studio) ────────────────────────────────────────
+  meta:
+    image: supabase/postgres-meta:v0.83.2
+    container_name: mw-meta
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PG_META_PORT: 8080
+      PG_META_DB_HOST: db
+      PG_META_DB_PORT: 5432
+      PG_META_DB_NAME: postgres
+      PG_META_DB_USER: postgres
+      PG_META_DB_PASSWORD: ${POSTGRES_PASSWORD:-mediawatch_secret}
+    restart: unless-stopped
+
+  # ─── Redis ──────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: mw-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ─── Backend (FastAPI) ──────────────────────────────────────────────────
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: mw-backend
+    depends_on:
+      kong:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    ports:
+      - "8001:8000"
+    environment:
+      # App
+      APP_ENV: production
+      DEBUG: "false"
+      SECRET_KEY: ${JWT_SECRET:-super-secret-jwt-token-with-at-least-32-characters-long}
+      # Supabase (via Kong gateway interne)
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      # Redis
+      REDIS_URL: redis://redis:6379/0
+      # CORS
+      CORS_ORIGINS: "http://localhost:3000,http://localhost:80,http://localhost"
+      # Jina AI
+      JINA_API_KEY: ${JINA_API_KEY:-}
+      # OpenRouter AI
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-google/gemini-2.0-flash-001}
+    restart: unless-stopped
+
+  # ─── Frontend (React/Nginx) ─────────────────────────────────────────────
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8001/v1}
+        VITE_SUPABASE_URL: ${API_EXTERNAL_URL:-http://localhost:8000}
+        VITE_SUPABASE_ANON_KEY: ${ANON_KEY}
+    container_name: mw-frontend
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"
+    restart: unless-stopped
+
+volumes:
+  db_data:
+  redis_data:

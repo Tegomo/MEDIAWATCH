@@ -19,8 +19,8 @@ def _get_or_create_settings(db: SupabaseDB, user: dict) -> dict:
         settings = db.insert_one("alert_settings", {
             "user_id": user["id"],
             "enabled": True,
-            "channel": "email",
-            "frequency": "batch_1h",
+            "channel": "EMAIL",
+            "frequency": "BATCH_1H",
             "negative_only": True,
             "min_sentiment_score": 0.3,
             "created_at": now,
