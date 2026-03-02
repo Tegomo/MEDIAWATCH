@@ -1,0 +1,40 @@
+/**
+ * Client Supabase pour authentification
+ */
+import { createClient } from '@supabase/supabase-js'
+
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+
+if (!supabaseUrl || !supabaseAnonKey) {
+  throw new Error('Missing Supabase environment variables')
+}
+
+export const supabase = createClient(supabaseUrl, supabaseAnonKey)
+
+/**
+ * Récupère le token JWT de l'utilisateur courant
+ */
+export async function getAccessToken(): Promise<string | null> {
+  const {
+    data: { session },
+  } = await supabase.auth.getSession()
+  return session?.access_token ?? null
+}
+
+/**
+ * Vérifie si l'utilisateur est authentifié
+ */
+export async function isAuthenticated(): Promise<boolean> {
+  const {
+    data: { session },
+  } = await supabase.auth.getSession()
+  return !!session
+}
+
+/**
+ * Déconnexion
+ */
+export async function signOut(): Promise<void> {
+  await supabase.auth.signOut()
+}

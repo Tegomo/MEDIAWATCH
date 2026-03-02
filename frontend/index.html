@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <script>
+      (function() {
+        var t = localStorage.getItem('mediawatch-theme');
+        document.documentElement.classList.add(t === 'light' ? 'light' : 'dark');
+      })();
+    </script>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MediaWatch CI - Veille Médias Automatisée</title>
+    <meta name="description" content="Plateforme SaaS de veille médiatique automatisée pour la Côte d'Ivoire. Surveillance en temps réel des médias ivoiriens, analyse de sentiment, alertes et rapports." />
+    <meta name="keywords" content="veille médiatique, Côte d'Ivoire, médias ivoiriens, analyse sentiment, monitoring presse, MediaWatch" />
+    <meta name="author" content="MediaWatch CI" />
+    <meta property="og:title" content="MediaWatch CI - Veille Médias Automatisée" />
+    <meta property="og:description" content="Surveillance en temps réel des médias ivoiriens avec analyse de sentiment et alertes automatiques." />
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="fr_CI" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="MediaWatch CI" />
+    <meta name="twitter:description" content="Plateforme de veille médiatique automatisée pour la Côte d'Ivoire." />
+    <meta name="theme-color" content="#2563eb" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

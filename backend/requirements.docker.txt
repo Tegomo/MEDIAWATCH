@@ -1,0 +1,38 @@
+# Web Framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+
+# Supabase REST client
+httpx==0.26.0
+
+# Authentication
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# Scraping
+selectolax==0.3.21
+beautifulsoup4==4.12.3
+lxml==5.1.0
+
+# Data Processing
+pandas==2.2.0
+numpy==1.26.3
+
+# Email
+sendgrid==6.11.0
+
+# PDF Generation
+weasyprint==60.2
+reportlab==4.0.9
+
+# Redis
+redis==5.0.1
+
+# Utilities
+python-dotenv==1.0.1
+pydantic[email]==2.5.3
+pydantic-settings==2.1.0
+
+# Monitoring
+sentry-sdk==1.40.0
