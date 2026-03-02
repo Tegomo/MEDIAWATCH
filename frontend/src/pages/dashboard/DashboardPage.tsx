@@ -68,6 +68,7 @@ export default function DashboardPage() {
         const s = await api.get<{
           running: boolean
           progress: string
+          counts?: { articles: number; mentions: number }
           result: {
             success: boolean
             message: string
@@ -87,8 +88,13 @@ export default function DashboardPage() {
         }>('/mentions/scan/status')
 
         if (s.data.running) {
-          setScanProgress(s.data.progress || 'En cours…')
-          await new Promise(r => setTimeout(r, 3000))
+          const c = s.data.counts
+          const countsInfo = c ? ` — ${c.articles} article(s), ${c.mentions} mention(s)` : ''
+          setScanProgress((s.data.progress || 'En cours…') + countsInfo)
+          // Rafraîchir les données du dashboard en temps réel
+          queryClient.invalidateQueries({ queryKey: ['mentions'] })
+          queryClient.invalidateQueries({ queryKey: ['mention-stats'] })
+          await new Promise(r => setTimeout(r, 5000))
           return poll()
         }
 

@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react'
-import { Radar, Loader2, ChevronDown, X } from 'lucide-react'
+import { Radar, Loader2, ChevronDown, X, Globe } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { cn } from '@/lib/utils'
 import api from '@/services/api'
+import { useQueryClient } from '@tanstack/react-query'
 
 interface Keyword {
   id: string
@@ -25,7 +26,11 @@ export default function ScanDialog({ scanning, onScanStart }: ScanDialogProps) {
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [loadingKw, setLoadingKw] = useState(false)
+  const [scanUrl, setScanUrl] = useState('')
+  const [scanUrlLoading, setScanUrlLoading] = useState(false)
+  const [scanUrlResult, setScanUrlResult] = useState<string | null>(null)
   const panelRef = useRef<HTMLDivElement>(null)
+  const queryClient = useQueryClient()
 
   useEffect(() => {
     if (open && keywords.length === 0) {
@@ -62,6 +67,24 @@ export default function ScanDialog({ scanning, onScanStart }: ScanDialogProps) {
 
   const handleScanAll = () => {
     onScanStart({})
+  }
+
+  const handleScanUrl = async () => {
+    if (!scanUrl.trim()) return
+    setScanUrlLoading(true)
+    setScanUrlResult(null)
+    try {
+      const res = await api.post<{ success: boolean; message: string; mentions_created: number }>('/mentions/scan/url', { url: scanUrl.trim() })
+      setScanUrlResult(res.data.message)
+      setScanUrl('')
+      queryClient.invalidateQueries({ queryKey: ['mentions'] })
+      queryClient.invalidateQueries({ queryKey: ['mention-stats'] })
+    } catch (err: unknown) {
+      const axiosErr = err as { response?: { data?: { detail?: string } } }
+      setScanUrlResult(axiosErr?.response?.data?.detail || 'Erreur lors du scan URL')
+    } finally {
+      setScanUrlLoading(false)
+    }
   }
 
   const hasParams = selectedKeywordId || dateFrom || dateTo
@@ -178,6 +201,40 @@ export default function ScanDialog({ scanning, onScanStart }: ScanDialogProps) {
                   Réinitialiser
                 </Button>
               )}
+            </div>
+
+            <div className="border-t pt-3 mt-1">
+              <div className="space-y-1.5">
+                <Label className="flex items-center gap-1.5 text-xs">
+                  <Globe className="h-3 w-3" />
+                  Scanner une URL
+                </Label>
+                <div className="flex gap-1.5">
+                  <Input
+                    type="url"
+                    placeholder="https://example.com/article..."
+                    value={scanUrl}
+                    onChange={(e) => { setScanUrl(e.target.value); setScanUrlResult(null) }}
+                    className="h-9 text-xs flex-1"
+                    onKeyDown={(e) => e.key === 'Enter' && handleScanUrl()}
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleScanUrl}
+                    disabled={scanUrlLoading || !scanUrl.trim()}
+                    className="h-9 gap-1.5 px-3"
+                  >
+                    {scanUrlLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Globe className="h-3 w-3" />}
+                    Scan
+                  </Button>
+                </div>
+                {scanUrlResult && (
+                  <p className="text-xs text-muted-foreground bg-muted/50 rounded-md p-2 mt-1">
+                    {scanUrlResult}
+                  </p>
+                )}
+              </div>
             </div>
           </div>
         </div>
